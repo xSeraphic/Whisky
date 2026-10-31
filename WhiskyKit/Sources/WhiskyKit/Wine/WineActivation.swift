@@ -73,10 +73,11 @@ public enum WineActivation {
 
     /// For a launch that goes through Steam: brings each new Wine window to the front as it appears, so Steam's
     /// first-launch dialogs (launch options, EULA, "Launching…") aren't hidden behind other apps, and stops once a
-    /// window from a new process (the game itself) has been activated.
-    @MainActor
+    /// window from a new process that isn't part of Steam or Wine (the game itself) has been activated.
+    /// Returns false if no game window appeared within `timeout`.
+    @MainActor @discardableResult
     public static func followLaunch(existingPIDs: Set<pid_t>, existingWindows: Set<CGWindowID>,
-                                    timeout: Duration = .seconds(120)) async {
+                                    timeout: Duration = .seconds(120)) async -> Bool {
         let clock = ContinuousClock()
         let deadline = clock.now + timeout
         var handled = existingWindows
@@ -86,10 +87,46 @@ public enum WineActivation {
                 guard let app = NSRunningApplication(processIdentifier: window.pid) else { continue }
                 NSApp.yieldActivation(to: app)
                 app.activate()
-                if !existingPIDs.contains(window.pid) { return }
+                // Steam starting up (when it wasn't running) also shows windows from new processes; keep following.
+                if !existingPIDs.contains(window.pid), !isHelper(pid: window.pid) { return true }
             }
             try? await Task.sleep(for: .milliseconds(500))
         }
+        return false
+    }
+
+    /// Windows programs that show windows during a launch but aren't the game.
+    static let helperExecutables: Set<String> = [
+        "steam.exe", "steamwebhelper.exe", "steamwebhelper_real.exe", "steamservice.exe",
+        "steamerrorreporter.exe", "explorer.exe"
+    ]
+
+    /// True if the Wine process is Steam or part of Wine itself.
+    static func isHelper(pid: pid_t) -> Bool {
+        windowsExecutableName(pid: pid).map { helperExecutables.contains($0) } ?? false
+    }
+
+    /// Wine sets a process's `argv[0]` to the Windows path of the program it runs (`C:\…\steam.exe`).
+    /// Returns its lowercased file name, read the same way `ps` does.
+    static func windowsExecutableName(pid: pid_t) -> String? {
+        var mib = [CTL_KERN, KERN_PROCARGS2, pid]
+        var size = 0
+        guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 0 else { return nil }
+        var buffer = [UInt8](repeating: 0, count: size)
+        guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0 else { return nil }
+        return executableName(fromProcArgs: Array(buffer.prefix(size)))
+    }
+
+    /// Parses `KERN_PROCARGS2` output: `argc` (Int32), the executable path, NUL padding, then `argv[0]`.
+    static func executableName(fromProcArgs bytes: [UInt8]) -> String? {
+        var index = MemoryLayout<Int32>.size
+        guard bytes.count > index else { return nil }
+        while index < bytes.count, bytes[index] != 0 { index += 1 }
+        while index < bytes.count, bytes[index] == 0 { index += 1 }
+        let end = bytes[index...].firstIndex(of: 0) ?? bytes.count
+        guard end > index, let argv0 = String(bytes: bytes[index..<end], encoding: .utf8) else { return nil }
+        let name = argv0.split(whereSeparator: { $0 == "\\" || $0 == "/" }).last.map(String.init) ?? argv0
+        return name.trimmingCharacters(in: .whitespaces).lowercased()
     }
 
     /// Normal on-screen windows (layer 0, larger than 100×100) owned by Wine processes.

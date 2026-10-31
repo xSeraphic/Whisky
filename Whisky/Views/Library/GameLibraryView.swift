@@ -42,9 +42,6 @@ struct GameLibraryView: View {
     @State private var games: [LibraryGame] = []
     @State private var search = ""
     @State private var loading = true
-    /// Games launched recently. Wine can take a while to show a window, and a second click
-    /// starts a second copy that fights the first.
-    @State private var recentlyLaunched: [String: Date] = [:]
 
     private let columns = [GridItem(.adaptive(minimum: 150, maximum: 190), spacing: 22)]
 
@@ -123,34 +120,60 @@ struct GameLibraryView: View {
     }
 
     private func launch(_ game: LibraryGame) {
-        if let last = recentlyLaunched[game.id], Date().timeIntervalSince(last) < 20 { return }
-        recentlyLaunched[game.id] = Date()
         guard let bottle = bottleVM.bottles.first(where: { $0.url == game.bottleURL }) else { return }
         switch game.source {
         case .steam(let appID, let steamExe):
+            // Wine can take a while to show a window, and a second click starts a second copy that fights the
+            // first. Steam launches are slower than most, so they get a longer window than the default.
+            guard LaunchGuard.shared.shouldLaunch(game.id, interval: 20) else { return }
             let existingWine = WineActivation.currentWinePIDs()
             let existingWindows = WineActivation.currentWineWindowIDs()
-            if let direct = GameCompat.forGame(game) {
-                // Known game: make sure one Steam client is up and signed in (for DRM), then start the game itself
-                // with its workarounds. This also skips Steam's launch-options dialog, which doesn't render under
-                // Wine on macOS.
+            let direct = GameCompat.forGame(game)
+            if let direct {
                 GameCompat.prepareDirectLaunch(appID: appID, executable: direct.executable, bottle: bottle)
-                Task.detached(priority: .userInitiated) {
-                    await SteamLauncher.ensureRunning(steamExe: steamExe, bottle: bottle)
-                    try? await Wine.runProgram(at: direct.executable, bottle: bottle,
-                                               environment: direct.compat.environment)
-                    await WineActivation.followLaunch(existingPIDs: existingWine, existingWindows: existingWindows)
+            }
+            Task.detached(priority: .userInitiated) {
+                do {
+                    if let direct {
+                        // Known game: make sure one Steam client is up and signed in (for DRM), then start the game
+                        // itself with its workarounds. This also skips Steam's launch-options dialog, which doesn't
+                        // render under Wine on macOS.
+                        await SteamLauncher.ensureRunning(steamExe: steamExe, bottle: bottle)
+                        try await Wine.runProgram(at: direct.executable, bottle: bottle,
+                                                  environment: direct.compat.environment)
+                    } else {
+                        try await Wine.runProgram(at: steamExe, args: ["-silent", "steam://rungameid/\(appID)"],
+                                                  bottle: bottle)
+                    }
+                } catch {
+                    LaunchGuard.shared.forget(game.id)
+                    await showLaunchError(game, detail: error.localizedDescription)
+                    return
                 }
-            } else {
-                Task.detached(priority: .userInitiated) {
-                    try? await Wine.runProgram(at: steamExe, args: ["-silent", "steam://rungameid/\(appID)"],
-                                               bottle: bottle)
-                    await WineActivation.followLaunch(existingPIDs: existingWine, existingWindows: existingWindows)
+                let opened = await WineActivation.followLaunch(existingPIDs: existingWine,
+                                                               existingWindows: existingWindows)
+                if !opened {
+                    LaunchGuard.shared.forget(game.id)
+                    await showLaunchError(game, detail: String(localized: """
+                        It may still be starting, or Steam may be waiting for you to sign in or confirm \
+                        something. Check Steam's window, or press ⌘L to open the logs.
+                        """))
                 }
             }
         case .pinned(let exe):
+            // `Program.run` has its own repeat-launch guard and error alert.
             Program(url: exe, bottle: bottle).run()
         }
+    }
+
+    @MainActor
+    private func showLaunchError(_ game: LibraryGame, detail: String) {
+        let alert = NSAlert()
+        alert.messageText = String(localized: "\(game.name) didn't open")
+        alert.informativeText = detail
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: String(localized: "OK"))
+        alert.runModal()
     }
 }
 

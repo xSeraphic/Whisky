@@ -31,11 +31,18 @@ public final class LaunchGuard: @unchecked Sendable {
     public init() {}
 
     /// Returns true and records the launch, unless the same key was launched less than `interval` seconds ago.
-    public func shouldLaunch(_ key: String, now: Date = Date()) -> Bool {
+    public func shouldLaunch(_ key: String, interval: TimeInterval = LaunchGuard.interval, now: Date = Date()) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        if let last = lastLaunch[key], now.timeIntervalSince(last) < Self.interval { return false }
+        if let last = lastLaunch[key], now.timeIntervalSince(last) < interval { return false }
         lastLaunch[key] = now
         return true
+    }
+
+    /// Forgets a launch, for example because it failed, so trying again works straight away.
+    public func forget(_ key: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        lastLaunch[key] = nil
     }
 }

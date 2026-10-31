@@ -4,6 +4,14 @@ All notable changes to Sili are listed here. Versions follow [Semantic Versionin
 
 ## [Unreleased]
 
+### Fixed
+- **Games not brought to the front when Steam wasn't running yet.** Pressing Play started Steam first, and
+  Sili mistook Steam's own windows for the game's, so it stopped there and the game opened behind other
+  windows. Sili now recognises Steam's processes and keeps going until the game's window appears.
+- **Play could seem to do nothing.** If a game couldn't be started, or no game window appeared within two
+  minutes, nothing told you. Sili now shows an alert, and you can press Play again straight away.
+- The Library's double-click guard no longer resets when you switch away from the Library and back.
+
 ## [1.3.1] - 2026-10-22
 
 Patch release: fix from testing more games.

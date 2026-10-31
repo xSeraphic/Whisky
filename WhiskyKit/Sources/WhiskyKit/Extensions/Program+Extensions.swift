@@ -43,6 +43,7 @@ extension Program {
                 )
                 await WineActivation.activateNewWindow(excluding: existingWine)
             } catch {
+                LaunchGuard.shared.forget(self.url.path(percentEncoded: false))
                 await MainActor.run {
                     self.showRunError(message: error.localizedDescription)
                 }
