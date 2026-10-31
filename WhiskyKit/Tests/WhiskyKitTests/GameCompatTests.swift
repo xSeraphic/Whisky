@@ -56,6 +56,34 @@ struct GameCompatTests {
         #expect(guardian.shouldLaunch("steam.exe", now: start.addingTimeInterval(LaunchGuard.interval + 1)))
     }
 
+    @Test func launchGuardHonoursCustomIntervalAndForget() {
+        let guardian = LaunchGuard()
+        let start = Date()
+        #expect(guardian.shouldLaunch("game", interval: 20, now: start))
+        #expect(!guardian.shouldLaunch("game", interval: 20, now: start.addingTimeInterval(15)))
+        guardian.forget("game")
+        #expect(guardian.shouldLaunch("game", interval: 20, now: start.addingTimeInterval(16)))
+    }
+
+    @Test func readsWindowsProgramNameFromProcessArguments() {
+        func procArgs(_ exec: String, _ argv: [String]) -> [UInt8] {
+            var bytes = withUnsafeBytes(of: Int32(argv.count)) { Array($0) }
+            bytes += Array(exec.utf8) + [0, 0, 0]
+            for arg in argv { bytes += Array(arg.utf8) + [0] }
+            return bytes
+        }
+        let steam = procArgs("/Libraries/Wine/bin/wine", [#"C:\Program Files (x86)\Steam\Steam.exe"#, "-silent"])
+        #expect(WineActivation.executableName(fromProcArgs: steam) == "steam.exe")
+        let game = procArgs("/Libraries/Wine/bin/wine", [#"C:\Games\AoE2DE_s.exe"#])
+        #expect(WineActivation.executableName(fromProcArgs: game) == "aoe2de_s.exe")
+        #expect(WineActivation.executableName(fromProcArgs: [1, 0]) == nil)
+    }
+
+    @Test func treatsOwnProcessAsNotAHelper() {
+        // This test process isn't a Wine program, so it isn't mistaken for Steam.
+        #expect(!WineActivation.isHelper(pid: getpid()))
+    }
+
     @Test func parsesSteamActiveUser() {
         let signedIn = "HKEY_CURRENT_USER\\Software\\Valve\\Steam\\ActiveProcess\n"
             + "    ActiveUser    REG_DWORD    0x4fb16a2\n"
